@@ -1,0 +1,10 @@
+[custom.all.balls]
+type = "local"
+path = "."
+ipkg = "balls.ipkg"
+test = "test/test.ipkg"
+
+[custom.all.balls-test]
+type = "local"
+path = "test"
+ipkg = "test.ipkg"
