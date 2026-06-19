@@ -143,6 +143,26 @@ data Elem : Type -> MessageType -> Type where
   Here : Elem a (SUnion a s)
   There : Elem a s -> Elem a (SUnion b s)
 
+public export
+data Elems : (a : Type) -> MessageType -> Type where
+  [search a, noHints]
+  ENil : Elems a s
+  EObj : Elems a (SSingleton a)
+  EHere : Elems a s -> Elems a (SUnion a s)
+  EThere : Elems a s -> Elems a (SUnion b s)
+
+%hint public export
+elemsObj : Elems a (SSingleton a)
+elemsObj = EObj
+
+%hint public export
+elemsHere : Elems a s -> Elems a (SUnion a s)
+elemsHere = EHere
+
+%hint public export
+elemsThere : Elems a s -> Elems a (SUnion b s)
+elemsThere = EThere
+
 export
 splitElem :
   {s1 : MessageType} ->
@@ -178,6 +198,13 @@ liftMessage Here val = LeftMsg val
 liftMessage (There x) val = RightMsg (liftMessage x val)
 
 export
+liftMessages : {s : MessageType} -> Elems a s -> a -> List (Message s)
+liftMessages ENil _ = []
+liftMessages EObj val = [Singleton val]
+liftMessages (EHere xs) val = LeftMsg val :: map RightMsg (liftMessages xs val)
+liftMessages (EThere xs) val = map RightMsg (liftMessages xs val)
+
+export
 data Controller : MessageType -> ModelType -> Type where
   Handle : (Message s -> Model m -> Model m) -> Controller s m
 
@@ -187,7 +214,9 @@ combineController :
 combineController (Handle f) (Handle g) = Handle $ \msg, mdl =>
   let (mdl1, mdl2) = splitModel {m1} mdl
   in case splitMessage {s1} msg of
-    Left msg1 => combineModel (f msg1 mdl1) mdl2
+    Left msg1 =>
+      let mdl1' = (f msg1 mdl1)
+      in combineModel mdl1' mdl2
     Right msg2 => combineModel mdl1 (g msg2 mdl2)
 
 export
@@ -201,6 +230,10 @@ controllerId = Handle $ \_, mdl => mdl
 export
 run : Message s -> Model m -> Controller s m -> Model m
 run msg mdl (Handle f) = f msg mdl
+
+export
+broadcast : {s : MessageType} -> a -> {auto els : Elems a s} -> Model m -> Controller s m -> Model m
+broadcast ev {els} m c = foldl (\accM, msg => run msg accM c) m (liftMessages els ev)
 
 export
 record Component (s : MessageType) (m : ModelType) where
@@ -246,13 +279,13 @@ namespace ComponentJoin
     MkComponent (combineModel m1 m2) (\m => let (l, r) = splitModel m in v1 l <> v2 r) (c1 <> c2)
 
 public export
-windowOf : {s : MessageType} -> Component s m -> {auto el : Elem Event s} -> IO ()
-windowOf cmp {el} = withWindow $ \win => frame (handleWindow win cmp)
+windowOf : {s : MessageType} -> Component s m -> {auto els : Elems Event s} -> IO ()
+windowOf cmp {els} = withWindow $ \win => frame (handleWindow win cmp)
   where
     winEvents : Window -> Component s m -> IO (Component s m)
     winEvents win (MkComponent m v c) =
       pollEvent win >>= \case
-        Just ev => winEvents win $ MkComponent (run (liftMessage el ev) m c) v c
+        Just ev => winEvents win $ MkComponent (broadcast ev m c) v c
         Nothing => pure (MkComponent m v c)
 
     handleWindow : Window -> Component s m -> IO ()
