@@ -1,39 +1,61 @@
 module Main
 
-import Debug.Trace
-import Graphics
+import Component
+import Window
+import Geometry
+import Event
 
 red : Color
 red = MkCol 255 0 0 255
 
-blue : Color
-blue = MkCol 0 0 255 255
+green : Color
+green = MkCol 0 255 0 255
 
-white : Color
-white = MkCol 255 255 255 255
+record Circle1 where
+  constructor MkCirc1
+  color : Color
 
-record GameState where
-  constructor MkGame
+circle1View : Circle1 -> View
+circle1View circ = toView $ MkCircle (MkV2 200 200) 120 circ.color
+
+circle1Events : Event -> Circle1 -> Circle1
+circle1Events (MouseClick (MkMouse BLeft pos)) circ =
+  if circ.color == red
+    then { color := green } circ
+    else { color := red } circ
+circle1Events _ circ = circ
+
+circle1 : Component (Message1 Event) (Model1 Circle1)
+circle1 = component1 (model1 (MkCirc1 red))
+                     (view1 circle1View)
+                     (controller1 circle1Events)
+
+record Circle2 where
+  constructor MkCirc2
   toggle : Bool
 
-myScene : GameState -> Object
-myScene st = layer (-99) (MkFill white) <>
-             layer 5 (MkCircle (MkV2 200 70) 120 (if st.toggle then red else blue)) <>
-             MkCircle (MkV2 200 200) 70 blue
+circle2View : Circle2 -> View
+circle2View circ =
+  if circ.toggle
+    then toView $ MkCircle (MkV2 150 400) 100 (MkCol 40 40 40 255)
+    else unitView
 
-event : Event -> GameState -> GameState
-event (MouseClick (MkMouse BLeft pos)) st = { toggle $= not } st
-event _ st = st
+circle2Events : Event -> Circle2 -> Circle2
+circle2Events (MouseClick (MkMouse BRight pos)) circ =
+  { toggle $= not } circ
+circle2Events _ circ = circ
 
-handleGame : Window -> GameState -> IO ()
-handleGame win st = events win st >>= \st' => renderObject win (myScene st')
-                                              >> frame (handleGame win st')
-  where
-    events : Window -> GameState -> IO GameState
-    events win st = trace "Events" $
-      pollEvent win >>= \case
-        Just ev => events win (event ev st)
-        Nothing => pure st
+circle2 : Component (Message1 Event) (Model1 Circle2)
+circle2 = component1 (model1 (MkCirc2 True))
+                     (view1 circle2View)
+                     (controller1 circle2Events)
+
+backgroundView : () -> View
+backgroundView () = layer (-99) $ MkFill (MkCol 255 255 255 255)
+
+background = component1 (model1 ()) (view1 backgroundView) controllerId
+
+scene = background <> circle1 <> circle2
 
 main : IO ()
-main = withWindow $ \win => frame (handleGame win (MkGame False))
+main = windowOf scene

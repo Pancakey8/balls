@@ -55,6 +55,10 @@ function eventHandlers(win) {
 	win.mouse.middle = middle;
 	win.mouse.right = right;
     });
+
+    win.canvas.addEventListener("contextmenu", (e) => {
+	e.preventDefault();
+    });
 }
 
 function openWindow() {
@@ -72,7 +76,6 @@ function mkVec2(x, y) { return {x, y}; }
 function mkColor(r, g, b, a) { return {r, g, b, a}; }
 
 function drawCircle(win, center, color, rad) {
-    console.table({center,color,rad});
     win.ctx.beginPath();
     win.ctx.arc(center.x, center.y, rad, 0, 2 * Math.PI, false);
     win.ctx.fillStyle = "rgba(" + color.r + ", " + color.g + ", " + color.b + ", " + (color.a / 255) + ")";
@@ -80,7 +83,6 @@ function drawCircle(win, center, color, rad) {
 }
 
 function fillWindow(win, color) {
-    console.table({color});
     win.ctx.save();
     win.ctx.setTransform(1, 0, 0, 1, 0, 0);
     win.ctx.clearRect(0, 0, win.canvas.width, win.canvas.height)
@@ -110,6 +112,5 @@ function toFrame(_, f) { requestAnimationFrame((_) => f()); }
 function pollEvent(win) {
     const ev = (win.events.length == 0) ? null : win.events[0];
     win.events.shift();
-    console.table({ ev });
     return ev;
 }
