@@ -68,6 +68,11 @@ getData : Model m -> ModelData m
 getData (SingletonModel x) = x
 getData (ProdModel x y) = (x, getData y)
 
+public export
+packData : {m : ModelType} -> ModelData m -> Model m
+packData {m = MSingleton a} x = SingletonModel x
+packData {m = MProduct a b} (x, y) = ProdModel x (packData y)
+
 public export total
 Model1 : Type -> ModelType
 Model1 t = MSingleton t
@@ -156,6 +161,10 @@ elemsObj : Elems a (SSingleton a)
 elemsObj = EObj
 
 %hint public export
+elemsNil : Elems a (SSingleton b)
+elemsNil = ENil
+
+%hint public export
 elemsHere : Elems a s -> Elems a (SUnion a s)
 elemsHere = EHere
 
@@ -204,10 +213,11 @@ liftMessages EObj val = [Singleton val]
 liftMessages (EHere xs) val = LeftMsg val :: map RightMsg (liftMessages xs val)
 liftMessages (EThere xs) val = map RightMsg (liftMessages xs val)
 
-export
+public export
 data Controller : MessageType -> ModelType -> Type where
   Handle : (Message s -> Model m -> Model m) -> Controller s m
 
+export
 combineController : 
   {m1 : ModelType} -> {s1 : MessageType} ->
   Controller s1 m1 -> Controller s2 m2 -> Controller (SumMessage s1 s2) (ProductModel m1 m2)
@@ -218,6 +228,15 @@ combineController (Handle f) (Handle g) = Handle $ \msg, mdl =>
       let mdl1' = (f msg1 mdl1)
       in combineModel mdl1' mdl2
     Right msg2 => combineModel mdl1 (g msg2 mdl2)
+
+export
+monoController : 
+  {m : ModelType} -> {s1 : MessageType} ->
+  Controller s1 m -> Controller s2 m -> Controller (SumMessage s1 s2) m
+monoController (Handle f) (Handle g) = Handle $ \msg, mdl =>
+  case splitMessage {s1} msg of
+    Left msg1 => f msg1 mdl
+    Right msg2 => g msg2 mdl
 
 export
 controller1 : (a -> b -> b) -> Controller (Message1 a) (Model1 b)
@@ -246,6 +265,30 @@ export
 component1 : Model m -> (Model m -> View) -> Controller s m -> Component s m
 component1 = MkComponent
 
+export
+dispatch : {s : MessageType} -> a -> {auto els : Elems a s} -> Component s m -> Component s m
+dispatch ev (MkComponent m v c) = MkComponent (broadcast ev m c) v c
+
+export
+blit : Component s m -> View
+blit (MkComponent m v c) = v m
+
+export
+update : {m : ModelType} -> (ModelData m -> ModelData m) -> Component s m -> Component s m
+update f (MkComponent m v c) = MkComponent (packData $ f $ getData m) v c
+
+export
+modelOf : Component s m -> Model m
+modelOf (MkComponent m v c) = m
+
+export
+viewOf : Component s m -> (Model m -> View)
+viewOf (MkComponent m v c) = v
+
+export
+controllerOf : Component s m -> Controller s m
+controllerOf (MkComponent m v c) = c
+
 public export
 infixl 8 <>
 
@@ -262,10 +305,28 @@ namespace ModelJoin
   (<>) : Model m1 -> Model m2 -> Model (ProductModel m1 m2)
   (<>) = combineModel
 
+namespace ModelViewJoin
+  public export
+  (<>) : {m1 : ModelType} -> (Model m1 -> View) -> (Model m2 -> View) -> (Model (ProductModel m1 m2) -> View)
+  (<>) v1 v2 =
+    \mdl =>
+      let (l, r) = splitModel mdl
+      in v1 l <> v2 r
+
 namespace MessageJoin
   public export
   (<>) : Message s1 -> Message s2 -> Message (SumMessage s1 s2)
   (<>) = combineMessage
+
+namespace MessageTypeJoin
+  public export
+  (<>) : MessageType -> MessageType -> MessageType
+  (<>) = SumMessage
+
+namespace ControllerMono
+  public export
+  (<>) : {m : ModelType} -> {s1 : MessageType} -> Controller s1 m -> Controller s2 m -> Controller (SumMessage s1 s2) m
+  (<>) = monoController
 
 namespace ControllerJoin
   public export
@@ -276,7 +337,7 @@ namespace ComponentJoin
   public export
   (<>) : {m1 : ModelType} -> {s1 : MessageType} -> Component s1 m1 -> Component s2 m2 -> Component (SumMessage s1 s2) (ProductModel m1 m2)
   (MkComponent m1 v1 c1) <> (MkComponent m2 v2 c2) =
-    MkComponent (combineModel m1 m2) (\m => let (l, r) = splitModel m in v1 l <> v2 r) (c1 <> c2)
+    MkComponent (combineModel m1 m2) (v1 <> v2) (c1 <> c2)
 
 public export
 windowOf : {s : MessageType} -> Component s m -> {auto els : Elems Event s} -> IO ()
