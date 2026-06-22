@@ -5,76 +5,72 @@ import Window
 import Geometry
 import Event
 
-red : Color
 red = MkCol 255 0 0 255
-
-green : Color
-green = MkCol 0 255 0 255
-
-data ColorChange = ColNoop | NewColor Color
-data Appearance = ApNoop | Switch
-
-record Circle2 where
-  constructor MkCirc2
-  toggle : Bool
-  color : Color
-
-circle2View : Circle2 -> View
-circle2View circ =
-  if circ.toggle
-    then toView $ MkCircle (MkV2 150 400) 100 circ.color
-    else unitView
-
-circle2Color : ColorChange -> Circle2 -> Circle2
-circle2Color (NewColor col) circ = { color := col } circ
-circle2Color ColNoop circ = circ
-
-circle2 : Component (Message1 ()) (Model1 Circle2)
-circle2 = component1 (model1 (MkCirc2 True green))
-                     (view1 circle2View)
-                     controllerId
+blue = MkCol 0 0 255 255
+white = MkCol 255 255 255 255
 
 record Circle1 where
-  constructor MkCirc1
-  color : Color
-  app : Bool
+  constructor MkCircle1
+  colorSwitch : Bool
 
-circle1View : Circle1 -> View
-circle1View circ =
-  if circ.app
-    then toView $ MkCircle (MkV2 200 200) 120 circ.color
+viewCircle1 : Model [Circle1] -> View
+viewCircle1 [circ] = toView $ MkCircle (MkV2 200 200) 40 (if circ.colorSwitch
+                                                          then red
+                                                          else blue)
+
+data ColorSignal = Switch | Stay
+
+eventsCircle1 : Controller Event ColorSignal [Circle1]
+eventsCircle1 = MkController $ \ev, [circ] =>
+  case ev of
+    MouseClick (MkMouse BLeft (MkV2 x y)) =>
+      if pow (x - 200) 2 + pow (y - 200) 2 <= 1600
+        then (Switch, [{ colorSwitch $= not } circ])
+        else (Stay, [circ])
+    _ => (Stay, [circ])
+
+record Circle2 where
+  constructor MkCircle2
+  color : Color
+  visible : Bool
+
+viewCircle2 : Model [Circle2] -> View
+viewCircle2 [circ] =
+  if circ.visible
+    then toView $ MkCircle (MkV2 100 300) 60 circ.color
     else unitView
 
-circle1Appearance : Appearance -> Circle1 -> Circle1
-circle1Appearance ApNoop circ = circ
-circle1Appearance Switch circ = { app $= not } circ
+eventsCircle2 : Controller Event Unit [Circle2]
+eventsCircle2 = MkController $ \ev, [circ] =>
+  case ev of
+    MouseClick (MkMouse BLeft (MkV2 x y)) =>
+      if pow (x - 100) 2 + pow (y - 300) 2 <= 3600
+        then ((), [{ visible $= not } circ])
+        else ((), [circ])
+    _ => ((), [circ])
 
-circle1Events : Event -> Circle1 -> (ColorChange, Circle1)
-circle1Events (MouseClick (MkMouse BLeft pos)) circ =
-  if circ.color == red
-    then (NewColor red, { color := green } circ)
-    else (NewColor green, { color := red } circ)
-circle1Events _ circ = (ColNoop, circ)
+colorCircle2 : Controller ColorSignal Unit [Circle2]
+colorCircle2 = MkController $ \ev, [circ] =>
+  case ev of
+    Switch =>
+      if circ.color == blue
+        then ((), [{ color := red } circ])
+        else ((), [{ color := blue } circ])
+    Stay => ((), [circ])
 
-circle2Events : Event -> Circle2 -> (Appearance, Circle2)
-circle2Events (MouseClick (MkMouse BRight pos)) circ =
-  (Switch, { toggle $= not } circ)
-circle2Events _ circ = (ApNoop, circ)
+background : Component Unit Unit []
+background = MkComponent (\[] => layer (-99) (MkFill white))
+                         (arrow id)
 
-circle1 : Component (Message1 ()) (Model1 Circle2)
-          -> Component (Message1 Event <> Message1 Appearance <> Message1 Event <> Message1 ColorChange) (ProductModel (Model1 Circle1) (Model1 Circle2))
-circle1 circ2 = component1 (model1 (MkCirc1 red True) <> modelOf circ2)
-                           (view1 circle1View <> viewOf circ2)
-                           (connect (sender1 circle1Events `monoController` prodLift {m1 = Model1 ColorChange} (controller1 circle1Appearance))
-                                    (sender1 circle2Events `monoController` prodLift {m1 = Model1 Appearance} (controller1 circle2Color)))
+composedCtrl : Controller Event Unit [Circle1, Circle2]
+composedCtrl = 
+  (liftState' _ eventsCircle1 &&& liftState [Circle1] eventsCircle2)
+    >>> lmap fst (liftState [Circle1] colorCircle2)
 
-backgroundView : () -> View
-backgroundView () = layer (-99) $ MkFill (MkCol 255 255 255 255)
+jointCircle : Component Event Unit [Circle1, Circle2]
+jointCircle = MkComponent (\[c1, c2] => viewCircle1 [c1] <> viewCircle2 [c2]) composedCtrl
 
-background : Component (Message1 Unit) (Model1 Unit)
-background = component1 (model1 ()) (view1 backgroundView) controllerId
-
-scene = background <> circle1 circle2
+screen = liftState' _ (lmap (const ()) background) &&& jointCircle
 
 main : IO ()
-main = windowOf scene
+main = windowOf screen [MkCircle1 False, MkCircle2 red True]

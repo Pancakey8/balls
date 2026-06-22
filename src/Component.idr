@@ -1,15 +1,21 @@
 module Component
 
 import Data.List
+import Data.Either
+import Data.Maybe
 import Window
 import Event
+import Geometry
 
 export
+infixl 8 <>
+
+public export
 data View : Type where
-  Obj : IsObject a => a -> View
-  Empty : View
-  Join : (left : View) -> (right : View) -> View
-  Layer : (n : Int) -> View -> View
+  VEmpty : View
+  VObj : IsObject a => a -> View
+  VMany : List View -> View
+  VLayer : (n : Int) -> View -> View
 
 public export
 interface ToView a where
@@ -17,30 +23,38 @@ interface ToView a where
 
 public export
 IsObject a => ToView a where
-  toView = Obj
+  toView = VObj
 
 public export
 ToView View where
   toView = id
 
 export
-combineView : (ToView l, ToView r) => l -> r -> View
-combineView l r = Join (toView l) (toView r)
+combineView' : View -> View -> View
+combineView' (VMany l) (VMany r) = VMany (l ++ r)
+combineView' (VMany l) r = VMany (l ++ [r])
+combineView' l (VMany r) = VMany (l :: r)
+combineView' l r = VMany [l, r]
+
+export
+(<>) : (ToView l, ToView r) => l -> r -> View
+l <> r = combineView' (toView l) (toView r)
 
 export
 unitView : View
-unitView = Empty
+unitView = VEmpty
 
 export
 layer : ToView v => Int -> v -> View
-layer n vw = Layer n (toView vw)
+layer n vw = VLayer n (toView vw)
 
 normalise' : Int -> View -> List (Int, AnyObject)
-normalise' _ Empty = []
-normalise' n (Obj o) = [(n, MkAnyObj o)]
-normalise' n (Join l r) = normalise' n l ++ normalise' n r
-normalise' _ (Layer n obj) = normalise' n obj
+normalise' _ VEmpty = []
+normalise' n (VObj o) = [(n, MkAnyObj o)]
+normalise' n (VMany m) = concatMap (normalise' n) m
+normalise' _ (VLayer n obj) = normalise' n obj
 
+export
 normalise : View -> List AnyObject
 normalise obj = map snd $ sortBy (\(a, _), (b, _) => compare a b) $ normalise' 0 obj
 
@@ -48,384 +62,234 @@ export
 renderView : Window -> View -> IO ()
 renderView win vw = beginDraw win *> traverse_ (\(MkAnyObj o) => blit win o) (normalise vw) <* endDraw win
 
-export
-data ModelType : Type where
-  MSingleton : Type -> ModelType
-  MProduct : Type -> ModelType -> ModelType
-
-export
-data Model : ModelType -> Type where
-  SingletonModel : t -> Model (MSingleton t)
-  ProdModel : t -> Model ts -> Model (MProduct t ts)
-
-public export total
-ModelData : ModelType -> Type
-ModelData (MSingleton a) = a
-ModelData (MProduct a b) = (a, ModelData b)
+public export
+data Model : List Type -> Type where
+  Nil : Model []
+  (::) : (x : a) -> Model xs -> Model (a :: xs)
 
 public export
-getData : Model m -> ModelData m
-getData (SingletonModel x) = x
-getData (ProdModel x y) = (x, getData y)
+data Elem : Type -> List Type -> Type where
+  Here : Elem x (x :: xs)
+  There : Elem x xs -> Elem x (y :: xs)
 
 public export
-packData : {m : ModelType} -> ModelData m -> Model m
-packData {m = MSingleton a} x = SingletonModel x
-packData {m = MProduct a b} (x, y) = ProdModel x (packData y)
-
-public export total
-Model1 : Type -> ModelType
-Model1 t = MSingleton t
+modelAt : Elem t ts -> Model ts -> t
+modelAt Here (x :: xs) = x
+modelAt (There p) (x :: xs) = modelAt p xs
 
 public export
-model1 : a -> Model (Model1 a)
-model1 = SingletonModel
+(++) : Model xs -> Model ys -> Model (xs ++ ys)
+[] ++ ys = ys
+(x :: xs) ++ ys = x :: (xs ++ ys)
 
 public export
-view1 : (a -> View) -> (Model (Model1 a) -> View)
-view1 vw = \mdl => vw (getData mdl)
+splitModel : (xs : List Type) -> Model (xs ++ ys) -> (Model xs, Model ys)
+splitModel [] ys = ([], ys)
+splitModel (x :: xs) (y :: ys) =
+  let (l, r) = splitModel xs ys
+  in (y :: l, r)
 
-public export total
-ProductModel : ModelType -> ModelType -> ModelType
-ProductModel (MSingleton t) m2 = MProduct t m2
-ProductModel (MProduct t ts) m2 = MProduct t (ProductModel ts m2)
-
-export
-combineModel : Model m1 -> Model m2 -> Model (ProductModel m1 m2)
-combineModel (SingletonModel x) y = ProdModel x y
-combineModel (ProdModel t x) y = ProdModel t (combineModel x y)
-
-export
-splitModel : {auto m1 : ModelType} -> Model (ProductModel m1 m2) -> (Model m1, Model m2)
-splitModel {m1 = MSingleton t} (ProdModel v r) = (SingletonModel v, r)
-splitModel {m1 = MProduct t m} (ProdModel v r) =
-  let (l, r) = splitModel {m1 = m} r
-  in (ProdModel v l, r)
-
-export
-data MessageType : Type where
-  SSingleton : Type -> MessageType
-  SUnion : Type -> MessageType -> MessageType
-
-export
-data Message : MessageType -> Type where
-  Singleton : a -> Message (SSingleton a)
-  LeftMsg : a -> Message (SUnion a b)
-  RightMsg : Message b -> Message (SUnion a b)
-
-public export total
-Message1 : Type -> MessageType
-Message1 t = SSingleton t
+export infixr 5 <++>
+export infixr 3 ***
+export infixr 3 &&&
+export infixr 2 +++
+export infixr 2 \|/
+export infixr 1 >>>
 
 public export
-message1 : a -> Message (Message1 a)
-message1 = Singleton
-
-public export total
-SumMessage : MessageType -> MessageType -> MessageType
-SumMessage (SSingleton t) y = SUnion t y
-SumMessage (SUnion t x) y = SUnion t (SumMessage x y)
-
-combineMessage : Message s1 -> Message s2 -> Message (SumMessage s1 s2)
-combineMessage (Singleton t) y = LeftMsg t
-combineMessage (LeftMsg t) y = LeftMsg t
-combineMessage (RightMsg x) y = RightMsg (combineMessage x y)
-
-public export total
-MessageVariant : MessageType -> Type
-MessageVariant (SSingleton t) = t
-MessageVariant (SUnion a b) = Either a (MessageVariant b)
+interface Profunctor (p : Type -> Type -> List Type -> Type) where
+  lmap : (a2 -> a1) -> p a1 b st -> p a2 b st
+  rmap : (b1 -> b2) -> p a b1 st -> p a b2 st
 
 public export
-getMsg : Message s -> MessageVariant s
-getMsg (Singleton x) = x
-getMsg (LeftMsg x) = Left x
-getMsg (RightMsg y) = Right (getMsg y)
+interface Arrow (arr : Type -> Type -> List Type -> Type) where
+  arrow : (a -> b) -> arr a b []
+  (>>>) : arr a b st -> arr b c st -> arr a c st
+  first : arr a b st -> arr (a, c) (b, c) st
+  second : arr a b st -> arr (c, a) (c, b) st
+  liftState : (pre : List Type) -> arr a b st -> arr a b (pre ++ st)
+  liftState' : (suf : List Type) -> {st : List Type} -> arr a b st -> arr a b (st ++ suf)
+
+  (***) : arr inp1 out1 st -> arr inp2 out2 st -> arr (inp1, inp2) (out1, out2) st
+  f *** g = first f >>> second g
+
+  (&&&) : {st : List Type} -> arr inp out1 st -> arr inp out2 st -> arr inp (out1, out2) st
+  x &&& y = liftState' st (arrow dup)  >>> x *** y
+
+  loop : arr (inp, shr) (out, shr) (shr :: st) -> arr inp out (shr :: st)
 
 public export
-data Elem : Type -> MessageType -> Type where
-  HSingleton : Elem a (SSingleton a)
-  Here : Elem a (SUnion a s)
-  There : Elem a s -> Elem a (SUnion b s)
+interface Arrow arr => ArrowChoice (arr : Type -> Type -> List Type -> Type) where
+  left : arr a b st -> arr (Either a c) (Either b c) st
+  right : arr a b st -> arr (Either c a) (Either c b) st
+
+  (+++) : arr a b st -> arr c d st -> arr (Either a c) (Either b d) st
+  f +++ g = left f >>> right g
+
+  (\|/) : {st : List Type} -> arr a b st -> arr c b st -> arr (Either a c) b st
+  f \|/ g = f +++ g >>> liftState' st (arrow fromEither)
 
 public export
-data Elems : (a : Type) -> MessageType -> Type where
-  [search a, noHints]
-  ENil : Elems a s
-  EObj : Elems a (SSingleton a)
-  EHere : Elems a s -> Elems a (SUnion a s)
-  EThere : Elems a s -> Elems a (SUnion b s)
-
-%hint public export
-elemsObj : Elems a (SSingleton a)
-elemsObj = EObj
-
-%hint public export
-elemsNil : Elems a (SSingleton b)
-elemsNil = ENil
-
-%hint public export
-elemsHere : Elems a s -> Elems a (SUnion a s)
-elemsHere = EHere
-
-%hint public export
-elemsThere : Elems a s -> Elems a (SUnion b s)
-elemsThere = EThere
-
-export
-splitElem :
-  {s1 : MessageType} ->
-  Elem a (SumMessage s1 s2) ->
-  Either (Elem a s1) (Elem a s2)
-
-splitElem {s1 = SSingleton a} Here = Left HSingleton
-splitElem {s1 = SSingleton t} (There x) = Right x
-
-splitElem {s1 = SUnion a x} Here = Left Here
-splitElem {s1 = SUnion t x} (There y) with (splitElem {s1 = x} y)
-  splitElem {s1 = SUnion t x} (There y) | Left rec  = Left (There rec)
-  splitElem {s1 = SUnion t x} (There y) | Right rec = Right rec
-
-export
-splitMessage : 
-  {auto s1 : MessageType} -> 
-  Message (SumMessage s1 s2) -> 
-  Either (Message s1) (Message s2)
-
-splitMessage {s1 = SSingleton a} (LeftMsg val) = Left (Singleton val)
-splitMessage {s1 = SSingleton a} (RightMsg msg) = Right msg
-
-splitMessage {s1 = SUnion a x} (LeftMsg val) = Left (LeftMsg val)
-splitMessage {s1 = SUnion a x} (RightMsg msg) with (splitMessage {s1 = x} msg)
-  splitMessage {s1 = SUnion a x} (RightMsg msg) | Left leftMsg  = Left (RightMsg leftMsg)
-  splitMessage {s1 = SUnion a x} (RightMsg msg) | Right rightMsg = Right rightMsg
-
-export
-liftMessage : {s : MessageType} -> Elem a s -> a -> Message s
-liftMessage HSingleton val = Singleton val
-liftMessage Here val = LeftMsg val
-liftMessage (There x) val = RightMsg (liftMessage x val)
-
-export
-liftMessages : {s : MessageType} -> Elems a s -> a -> List (Message s)
-liftMessages ENil _ = []
-liftMessages EObj val = [Singleton val]
-liftMessages (EHere xs) val = LeftMsg val :: map RightMsg (liftMessages xs val)
-liftMessages (EThere xs) val = map RightMsg (liftMessages xs val)
+interface Arrow arr => ArrowPlus (arr : Type -> Type -> List Type -> Type) where
+  zeroArrow : arr a (Maybe b) st
+  (<++>) : arr a (Maybe b) st -> arr a (Maybe b) st -> arr a (Maybe b) st
+  withDefault : arr a (Maybe b) st -> b -> arr a b st
 
 public export
-data Controller : MessageType -> ModelType -> Type where
-  Handle : (Message s -> Model m -> Model m) -> Controller s m
+record Controller (inp : Type) (out : Type) (st : List Type) where
+  constructor MkController
+  runController : inp -> Model st -> (out, Model st)
 
-export
-combineController : 
-  {m1 : ModelType} -> {s1 : MessageType} ->
-  Controller s1 m1 -> Controller s2 m2 -> Controller (SumMessage s1 s2) (ProductModel m1 m2)
-combineController (Handle f) (Handle g) = Handle $ \msg, mdl =>
-  let (mdl1, mdl2) = splitModel {m1} mdl
-  in case splitMessage {s1} msg of
-    Left msg1 =>
-      let mdl1' = (f msg1 mdl1)
-      in combineModel mdl1' mdl2
-    Right msg2 => combineModel mdl1 (g msg2 mdl2)
+public export
+Profunctor Controller where
+  lmap f (MkController c) = MkController $ \i, st =>
+    c (f i) st
+  rmap f (MkController c) = MkController $ \i, st =>
+    let (out, st') = c i st
+    in (f out, st')
 
-export
-monoController : 
-  {m : ModelType} -> {s1 : MessageType} ->
-  Controller s1 m -> Controller s2 m -> Controller (SumMessage s1 s2) m
-monoController (Handle f) (Handle g) = Handle $ \msg, mdl =>
-  case splitMessage {s1} msg of
-    Left msg1 => f msg1 mdl
-    Right msg2 => g msg2 mdl
+public export
+Arrow Controller where
+  arrow f = MkController $ \i, [] => (f i, [])
 
-export
-controller1 : (a -> b -> b) -> Controller (Message1 a) (Model1 b)
-controller1 f = Handle $ \msg, mdl => model1 (f (getMsg msg) (getData mdl))
+  (MkController f) >>> (MkController g) = MkController $ \i, st =>
+    let (interm, st') = f i st
+    in g interm st'
 
-export
-controllerId : Controller (Message1 Unit) m
-controllerId = Handle $ \_, mdl => mdl
+  first (MkController f) = MkController $ \(i, inpOther), st =>
+    let (i', st') = f i st
+    in ((i', inpOther), st')
 
-export
-run : Message s -> Model m -> Controller s m -> Model m
-run msg mdl (Handle f) = f msg mdl
+  second (MkController f) = MkController $ \(inpOther, i), st =>
+    let (i', st') = f i st
+    in ((inpOther, i'), st')
 
-export
-broadcast : {s : MessageType} -> a -> {auto els : Elems a s} -> Model m -> Controller s m -> Model m
-broadcast ev {els} m c = foldl (\accM, msg => run msg accM c) m (liftMessages els ev)
+  liftState pre (MkController f) = MkController $ \i, allSt =>
+    let (st1, st2) = splitModel pre allSt
+        (out, st2') = f i st2
+    in (out, st1 ++ st2')
 
-export
-mapController : 
-  (to : Model m2 -> Model m1) -> 
-  (from : Model m1 -> Model m2 -> Model m2) -> 
-  Controller s m1 -> Controller s m2
-mapController to from (Handle f) = Handle $ \msg, mdl2 =>
-  let mdl1  = to mdl2
-      mdl1' = f msg mdl1
-  in from mdl1' mdl2
+  liftState' suf {st} (MkController f) = MkController $ \i, allSt =>
+    let (st1, st2) = splitModel st allSt
+        (out, st1') = f i st1
+    in (out, st1' ++ st2)
 
-export
-prodLift : {m1 : ModelType} -> Controller s m2 -> Controller s (ProductModel m1 m2)
-prodLift {m1} = mapController to from
-  where
-    to : Model (ProductModel m1 m2) -> Model m2
-    to mdl = snd (splitModel {m1} mdl)
+  loop (MkController f) = MkController $ \inp, (prev :: s) =>
+    let ((out, next), (_ :: s')) = f (inp, prev) (prev :: s)
+    in (out, next :: s')
 
-    from : Model m2 -> Model (ProductModel m1 m2) -> Model (ProductModel m1 m2)
-    from newM2 oldMdl = 
-      let (leftM1, _) = splitModel {m1} oldMdl
-      in combineModel leftM1 newM2
+public export
+ArrowChoice Controller where
+  left (MkController f) = MkController $ \i, st =>
+    case i of
+      Left i =>
+        let (i', st') = f i st
+        in (Left i', st')
+      Right i => (Right i, st)
 
-export
-sender1 : (ev -> m -> (out, m)) -> Controller (Message1 ev) (ProductModel (Model1 out) (Model1 m))
-sender1 hdl = Handle $ \msg, mdl =>
-  let (_, st) = getData mdl
-      ev = getMsg msg
-      (out, st) = hdl ev st
-  in combineModel (model1 out) (model1 st)
+  right (MkController f) = MkController $ \i, st =>
+    case i of
+      Right i =>
+        let (i', st') = f i st
+        in (Right i', st')
+      Left i => (Left i, st)
 
-export
-connectFrom : {m1 : ModelType} -> {s1, s2 : MessageType} -> {out : Type} ->
-              Controller s1 (ProductModel (Model1 out) m1) ->
-              {auto def : out} ->
-              Controller s2 m2 ->
-              {auto els : Elems out s2} ->
-              Controller (SumMessage s1 s2) (ProductModel m1 m2)
-connectFrom c1 {def} c2 =
-  Handle $ \msg, mdl =>
-    let (l, r) = splitModel {m1} mdl
-    in case splitMessage {s1} msg of
-      Right msg2 =>
-        combineModel l (run msg2 r c2)
-      Left msg1 =>
-        let (out, l') = splitModel {m1 = (Model1 out)} (run msg1 (combineModel (model1 def) l) c1)
-            ev = getData out
-        in combineModel l' (broadcast ev r c2)
+public export
+ArrowPlus Controller where
+  zeroArrow = MkController $ \inp, st => (Nothing, st)
 
-export
-connect : {m1, m2 : ModelType} -> {s1, s2 : MessageType} ->
-          {out1, out2 : Type} ->
-          Controller s1 (ProductModel (Model1 out1) m1) ->
-          Controller s2 (ProductModel (Model1 out2) m2) ->
-          {auto def1 : out1} ->
-          {auto def2 : out2} ->
-          {auto els1 : Elems out1 s2} ->
-          {auto els2 : Elems out2 s1} ->
-          Controller (SumMessage s1 s2) (ProductModel m1 m2)
-connect c1 c2 {def1, def2} =
-  Handle $ \msg, mdl =>
-    let (l, r) = splitModel {m1} mdl
-    in case splitMessage {s1} msg of
-      Left msg1 =>
-        let (out, l') = splitModel {m1 = (Model1 out1)}
-                        (run msg1 (combineModel (model1 def1) l) c1)
-            ev = getData out
-            (_, r') = getData (broadcast ev (combineModel (model1 def2) r) c2)
-        in combineModel l' (packData r')
-      Right msg2 =>
-        let (out, r') = splitModel {m1 = (Model1 out2)}
-                        (run msg2 (combineModel (model1 def2) r) c2)
-            ev = getData out
-            (_, l') = getData (broadcast ev (combineModel (model1 def1) l) c1)
-        in combineModel (packData l') r'
+  (MkController f) <++> (MkController g) = MkController $ \inp, st =>
+    case f inp st of
+      (Just out, st') => (Just out, st')
+      (Nothing, _) => g inp st
 
-export
-record Component (s : MessageType) (m : ModelType) where
+  withDefault c def = rmap (fromMaybe def) c
+
+public export
+record Component (inp : Type) (out : Type) (st : List Type) where
   constructor MkComponent
-  model : Model m
-  view : Model m -> View
-  controller : Controller s m
-
-export
-component1 : Model m -> (Model m -> View) -> Controller s m -> Component s m
-component1 = MkComponent
-
-export
-dispatch : {s : MessageType} -> a -> {auto els : Elems a s} -> Component s m -> Component s m
-dispatch ev (MkComponent m v c) = MkComponent (broadcast ev m c) v c
-
-export
-blit : Component s m -> View
-blit (MkComponent m v c) = v m
-
-export
-update : {m : ModelType} -> (ModelData m -> ModelData m) -> Component s m -> Component s m
-update f (MkComponent m v c) = MkComponent (packData $ f $ getData m) v c
-
-export
-modelOf : Component s m -> Model m
-modelOf (MkComponent m v c) = m
-
-export
-viewOf : Component s m -> (Model m -> View)
-viewOf (MkComponent m v c) = v
-
-export
-controllerOf : Component s m -> Controller s m
-controllerOf (MkComponent m v c) = c
+  viewOf : Model st -> View
+  ctrlOf : Controller inp out st
 
 public export
-infixl 8 <>
+Profunctor Component where
+  lmap f (MkComponent v c) = MkComponent {
+    viewOf = v, 
+    ctrlOf = lmap f c }
+  rmap f (MkComponent v c) = MkComponent {
+    viewOf = v, 
+    ctrlOf = rmap f c }
 
 public export
-infixl 8 ^
+Arrow Component where
+  arrow f = MkComponent {
+    viewOf = \[] => unitView,
+    ctrlOf = arrow f }
 
-namespace ViewJoin
-  public export
-  (<>) : (ToView l, ToView r) => l -> r -> View
-  (<>) = combineView
+  (MkComponent v1 c1) >>> (MkComponent v2 c2) = MkComponent {
+    viewOf = \mdl => v1 mdl <> v2 mdl,
+    ctrlOf = c1 >>> c2 }
 
-namespace ModelJoin
-  public export
-  (<>) : Model m1 -> Model m2 -> Model (ProductModel m1 m2)
-  (<>) = combineModel
+  first (MkComponent v c) = MkComponent {
+    viewOf = v,
+    ctrlOf = first c }
 
-namespace ModelViewJoin
-  public export
-  (<>) : {m1 : ModelType} -> (Model m1 -> View) -> (Model m2 -> View) -> (Model (ProductModel m1 m2) -> View)
-  (<>) v1 v2 =
-    \mdl =>
-      let (l, r) = splitModel mdl
-      in v1 l <> v2 r
+  second (MkComponent v c) = MkComponent {
+    viewOf = v,
+    ctrlOf = second c }
 
-namespace MessageJoin
-  public export
-  (<>) : Message s1 -> Message s2 -> Message (SumMessage s1 s2)
-  (<>) = combineMessage
+  liftState pre (MkComponent v c) = MkComponent {
+    viewOf = \mdl =>
+      let (l, r) = splitModel pre mdl
+      in v r,
+    ctrlOf = liftState pre c }
 
-namespace MessageTypeJoin
-  public export
-  (<>) : MessageType -> MessageType -> MessageType
-  (<>) = SumMessage
+  liftState' suf {st} (MkComponent v c) = MkComponent {
+    viewOf = \mdl =>
+      let (l, r) = splitModel st mdl
+      in v l,
+    ctrlOf = liftState' suf c }
 
-namespace ControllerMono
-  public export
-  (<>) : {m : ModelType} -> {s1 : MessageType} -> Controller s1 m -> Controller s2 m -> Controller (SumMessage s1 s2) m
-  (<>) = monoController
-
-namespace ControllerJoin
-  public export
-  (<>) : {m1 : ModelType} -> {s1 : MessageType} -> Controller s1 m1 -> Controller s2 m2 -> Controller (SumMessage s1 s2) (ProductModel m1 m2)
-  (<>) = combineController
-
-namespace ComponentJoin
-  public export
-  (<>) : {m1 : ModelType} -> {s1 : MessageType} -> Component s1 m1 -> Component s2 m2 -> Component (SumMessage s1 s2) (ProductModel m1 m2)
-  (MkComponent m1 v1 c1) <> (MkComponent m2 v2 c2) =
-    MkComponent (combineModel m1 m2) (v1 <> v2) (c1 <> c2)
+  loop (MkComponent v c) = MkComponent {
+    viewOf = v, 
+    ctrlOf = loop c }
 
 public export
-windowOf : {s : MessageType} -> Component s m -> {auto els : Elems Event s} -> IO ()
-windowOf cmp {els} = withWindow $ \win => frame (handleWindow win cmp)
+ArrowChoice Component where
+  left (MkComponent v c) = MkComponent {
+    viewOf = v,
+    ctrlOf = left c }
+
+  right (MkComponent v c) = MkComponent {
+    viewOf = v,
+    ctrlOf = right c }
+
+public export
+ArrowPlus Component where
+  zeroArrow = MkComponent { viewOf = \_ => unitView, ctrlOf = zeroArrow }
+
+  (MkComponent v1 c1 <++> MkComponent v2 c2) = MkComponent {
+    viewOf = \mdl => v1 mdl <> v2 mdl,
+    ctrlOf = c1 <++> c2 }
+
+  withDefault c def = rmap (fromMaybe def) c
+
+public export
+windowOf : {st : List Type} -> Component Event output st -> Model st -> IO ()
+windowOf cmp initialSt = withWindow $ \win => handleWindow win initialSt
   where
-    winEvents : Window -> Component s m -> IO (Component s m)
-    winEvents win (MkComponent m v c) =
+    winEvents : Window -> Model st -> IO (Model st)
+    winEvents win currentState = do
       pollEvent win >>= \case
-        Just ev => winEvents win $ MkComponent (broadcast ev m c) v c
-        Nothing => pure (MkComponent m v c)
+        Just ev => do
+          let (_, nextState) = runController cmp.ctrlOf ev currentState
+          winEvents win nextState
+        Nothing => 
+          pure currentState
 
-    handleWindow : Window -> Component s m -> IO ()
-    handleWindow win cmp =
-      winEvents win cmp >>=
-       \(cmp'@(MkComponent m v c)) => renderView win (v m) >>
-                                      frame (handleWindow win cmp')
+    handleWindow : Window -> Model st -> IO ()
+    handleWindow win state = do
+      state' <- winEvents win state
+      let currentView = cmp.viewOf state'
+      renderView win currentView
+      frame (handleWindow win state')

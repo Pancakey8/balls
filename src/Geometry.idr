@@ -5,7 +5,7 @@ import Window
 public export
 record Vec2 where
   constructor MkV2
-  x, y : Double
+  vx, vy : Double
 
 data Vec2P : Type where [external]
 
