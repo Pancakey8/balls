@@ -255,6 +255,81 @@ broadcast : {s : MessageType} -> a -> {auto els : Elems a s} -> Model m -> Contr
 broadcast ev {els} m c = foldl (\accM, msg => run msg accM c) m (liftMessages els ev)
 
 export
+mapController : 
+  (to : Model m2 -> Model m1) -> 
+  (from : Model m1 -> Model m2 -> Model m2) -> 
+  Controller s m1 -> Controller s m2
+mapController to from (Handle f) = Handle $ \msg, mdl2 =>
+  let mdl1  = to mdl2
+      mdl1' = f msg mdl1
+  in from mdl1' mdl2
+
+export
+prodLift : {m1 : ModelType} -> Controller s m2 -> Controller s (ProductModel m1 m2)
+prodLift {m1} = mapController to from
+  where
+    to : Model (ProductModel m1 m2) -> Model m2
+    to mdl = snd (splitModel {m1} mdl)
+
+    from : Model m2 -> Model (ProductModel m1 m2) -> Model (ProductModel m1 m2)
+    from newM2 oldMdl = 
+      let (leftM1, _) = splitModel {m1} oldMdl
+      in combineModel leftM1 newM2
+
+export
+sender1 : (ev -> m -> (out, m)) -> Controller (Message1 ev) (ProductModel (Model1 out) (Model1 m))
+sender1 hdl = Handle $ \msg, mdl =>
+  let (_, st) = getData mdl
+      ev = getMsg msg
+      (out, st) = hdl ev st
+  in combineModel (model1 out) (model1 st)
+
+export
+connectFrom : {m1 : ModelType} -> {s1, s2 : MessageType} -> {out : Type} ->
+              Controller s1 (ProductModel (Model1 out) m1) ->
+              {auto def : out} ->
+              Controller s2 m2 ->
+              {auto els : Elems out s2} ->
+              Controller (SumMessage s1 s2) (ProductModel m1 m2)
+connectFrom c1 {def} c2 =
+  Handle $ \msg, mdl =>
+    let (l, r) = splitModel {m1} mdl
+    in case splitMessage {s1} msg of
+      Right msg2 =>
+        combineModel l (run msg2 r c2)
+      Left msg1 =>
+        let (out, l') = splitModel {m1 = (Model1 out)} (run msg1 (combineModel (model1 def) l) c1)
+            ev = getData out
+        in combineModel l' (broadcast ev r c2)
+
+export
+connect : {m1, m2 : ModelType} -> {s1, s2 : MessageType} ->
+          {out1, out2 : Type} ->
+          Controller s1 (ProductModel (Model1 out1) m1) ->
+          Controller s2 (ProductModel (Model1 out2) m2) ->
+          {auto def1 : out1} ->
+          {auto def2 : out2} ->
+          {auto els1 : Elems out1 s2} ->
+          {auto els2 : Elems out2 s1} ->
+          Controller (SumMessage s1 s2) (ProductModel m1 m2)
+connect c1 c2 {def1, def2} =
+  Handle $ \msg, mdl =>
+    let (l, r) = splitModel {m1} mdl
+    in case splitMessage {s1} msg of
+      Left msg1 =>
+        let (out, l') = splitModel {m1 = (Model1 out1)}
+                        (run msg1 (combineModel (model1 def1) l) c1)
+            ev = getData out
+            (_, r') = getData (broadcast ev (combineModel (model1 def2) r) c2)
+        in combineModel l' (packData r')
+      Right msg2 =>
+        let (out, r') = splitModel {m1 = (Model1 out2)}
+                        (run msg2 (combineModel (model1 def2) r) c2)
+            ev = getData out
+            (_, l') = getData (broadcast ev (combineModel (model1 def1) l) c1)
+        in combineModel (packData l') r'
+
+export
 record Component (s : MessageType) (m : ModelType) where
   constructor MkComponent
   model : Model m
