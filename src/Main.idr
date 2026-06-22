@@ -12,13 +12,18 @@ white = MkCol 255 255 255 255
 record Circle1 where
   constructor MkCircle1
   colorSwitch : Bool
+  visible : Bool
 
 viewCircle1 : Model [Circle1] -> View
-viewCircle1 [circ] = toView $ MkCircle (MkV2 200 200) 40 (if circ.colorSwitch
-                                                          then red
-                                                          else blue)
+viewCircle1 [circ] =
+  if circ.visible
+    then toView $ MkCircle (MkV2 200 200) 40 (if circ.colorSwitch
+                                                then red
+                                                else blue)
+    else unitView
 
 data ColorSignal = Switch | Stay
+data VisibleSignal = Woosh | Boop
 
 eventsCircle1 : Controller Event ColorSignal [Circle1]
 eventsCircle1 = MkController $ \ev, [circ] =>
@@ -28,6 +33,12 @@ eventsCircle1 = MkController $ \ev, [circ] =>
         then (Switch, [{ colorSwitch $= not } circ])
         else (Stay, [circ])
     _ => (Stay, [circ])
+
+visibCircle1 : Controller VisibleSignal Unit [Circle1]
+visibCircle1 = MkController $ \ev, [circ] =>
+  case ev of
+    Woosh => ((), [{ visible $= not } circ])
+    Boop => ((), [circ])
 
 record Circle2 where
   constructor MkCircle2
@@ -40,14 +51,14 @@ viewCircle2 [circ] =
     then toView $ MkCircle (MkV2 100 300) 60 circ.color
     else unitView
 
-eventsCircle2 : Controller Event Unit [Circle2]
+eventsCircle2 : Controller Event VisibleSignal [Circle2]
 eventsCircle2 = MkController $ \ev, [circ] =>
   case ev of
     MouseClick (MkMouse BLeft (MkV2 x y)) =>
       if pow (x - 100) 2 + pow (y - 300) 2 <= 3600
-        then ((), [{ visible $= not } circ])
-        else ((), [circ])
-    _ => ((), [circ])
+        then (Woosh, [{ visible $= not } circ])
+        else (Boop, [circ])
+    _ => (Boop, [circ])
 
 colorCircle2 : Controller ColorSignal Unit [Circle2]
 colorCircle2 = MkController $ \ev, [circ] =>
@@ -63,9 +74,11 @@ background = MkComponent (\[] => layer (-99) (MkFill white))
                          (arrow id)
 
 composedCtrl : Controller Event Unit [Circle1, Circle2]
-composedCtrl = 
-  (liftState' _ eventsCircle1 &&& liftState [Circle1] eventsCircle2)
-    >>> lmap fst (liftState [Circle1] colorCircle2)
+composedCtrl =
+  liftState' _ eventsCircle1
+    &&& liftState [Circle1] eventsCircle2
+    >>> first (liftState [Circle1] colorCircle2)
+    >>> lmap snd (liftState' _ visibCircle1)
 
 jointCircle : Component Event Unit [Circle1, Circle2]
 jointCircle = MkComponent (\[c1, c2] => viewCircle1 [c1] <> viewCircle2 [c2]) composedCtrl
@@ -73,4 +86,4 @@ jointCircle = MkComponent (\[c1, c2] => viewCircle1 [c1] <> viewCircle2 [c2]) co
 screen = liftState' _ (lmap (const ()) background) &&& jointCircle
 
 main : IO ()
-main = windowOf screen [MkCircle1 False, MkCircle2 red True]
+main = windowOf screen [MkCircle1 False True, MkCircle2 red True]
