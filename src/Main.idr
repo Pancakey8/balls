@@ -4,63 +4,57 @@ import Component
 import Window
 import Geometry
 import Event
+import Data.Vect
+import Data.Fin
+import Debug.Trace
 
 red = MkCol 255 0 0 255
 blue = MkCol 0 0 255 255
 white = MkCol 255 255 255 255
 
-data AnimTick = Tick Double
-data ColorState = WaitBlue | WaitRed
+data DetonateSignal : Nat -> Type where
+  Wait : DetonateSignal n
+  Go : (k : Fin n) -> DetonateSignal n
 
-record Circle1 where
-  constructor MkCircle1
-  color : Color
+record Circles (n : Nat) where
+  constructor MkCircles
+  states : Vect n Bool
 
-viewCircle1 : Model [Circle1] -> View
-viewCircle1 [circ] =
-  toView $ MkCircle (MkV2 200 200) 40 circ.color
+circlesView : (n : Nat) -> Model [Circles n] -> View
+circlesView n [(MkCircles states)] =
+  foldl (\v, (i, st) =>
+    case st of
+      True => v <> (MkCircle (MkV2 (50 * cast (finToNat i) + 50) 40) 25 red)
+      False => v) unitView (zip (allFins n) states)
 
-eventHandler : Controller (Event, AnimTick) (Unit, AnimTick) [Circle1]
-eventHandler = MkController $ \(ev, (Tick n)), [circ] =>
+detonationTrigger : (n : Nat) -> Controller (Event, DetonateSignal n) (Unit, DetonateSignal n) []
+detonationTrigger 0 = liftState (arrow (const ((), Wait)))
+detonationTrigger (S n) = MkController $ \(ev, det), st =>
+  case det of
+    Wait => case ev of
+      MouseClick _ => (((), Go FZ), st)
+      _ => (((), Wait), st)
+    _ => (((), det), st)
+
+detonationHandler : (n : Nat) -> Controller (DetonateSignal n) (DetonateSignal n) [Circles n]
+detonationHandler 0 = liftState (arrow (const Wait))
+detonationHandler (S n) = MkController $ \ev, [circ] =>
   case ev of
-    GameTick delta => 
-      let n' = delta + n
-      in (((), Tick n'), [circ])
-    _ => (((), Tick n), [circ])
+    Wait => (Wait, [circ])
+    Go k =>
+      let circ' = trace (show k) $ {states $= updateAt k not} circ
+      in case strengthen k of
+        Just k => (Go (FS k), [circ'])
+        Nothing => (Wait, [circ'])
 
-switchBlue : Controller (ColorState, AnimTick) (ColorState, AnimTick) [Circle1]
-switchBlue = MkController $ \(colSt, Tick n), [circ] =>
-  case colSt of
-    WaitBlue =>
-      if n >= 2
-        then ((WaitRed, Tick (n - 2)), [{ color := blue } circ])
-        else ((WaitBlue, Tick n), [circ])
-    other => 
-      ((other, Tick n), [circ])
+circlesHandler : (n : Nat) -> Controller Event Unit [DetonateSignal n, Circles n]
+circlesHandler n = loop $ liftState $ liftState (detonationTrigger n) >>> second (detonationHandler n)
 
-switchRed : Controller (ColorState, AnimTick) (ColorState, AnimTick) [Circle1]
-switchRed = MkController $ \(colSt, Tick n), [circ] =>
-  case colSt of
-    WaitRed =>
-      if n >= 2
-        then ((WaitBlue, Tick (n - 2)), [{ color := red } circ])
-        else ((WaitRed, Tick n), [circ])
-    other => 
-      ((other, Tick n), [circ])
+circles : (n : Nat) -> Component Event Unit [DetonateSignal n, Circles n]
+circles n = MkComponent (\[_, circ] => circlesView n [circ]) (circlesHandler n)
 
-alternatingHandler : Controller (Unit, ColorState) (Unit, ColorState) [AnimTick, Circle1]
-alternatingHandler = second (loop (liftState $ switchBlue >>> switchRed))
-
-eventLoop : Controller Event Unit [AnimTick, Circle1]
-eventLoop = loop (liftState eventHandler)
-
-alternatingLoop : Controller Unit Unit [ColorState, AnimTick, Circle1]
-alternatingLoop = loop (liftState alternatingHandler)
-
-circle : Component Event Unit [ColorState, AnimTick, Circle1]
-circle = MkComponent (\[_, _, circ] => viewCircle1 [circ])
-         $ liftState eventLoop >>> alternatingLoop
+background : Component Unit Unit []
+background = MkComponent (\[] => toView (MkFill white)) (arrow id)
 
 main : IO ()
-main = windowOf circle [WaitBlue, Tick 0, MkCircle1 red]
-
+main = windowOf (liftState' (lmap (const ()) background) &&& circles 10) [Wait, MkCircles (replicate 10 True)]
