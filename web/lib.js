@@ -1,6 +1,7 @@
 function eventHandlers(win) {
     win.mouse = { left: false, middle: false, right: false };
     win.events = [];
+    win.lastTick = Date.now();
 
     win.canvas.addEventListener("mousedown", (e) => {
 	const left = (e.buttons & 1) === 1;
@@ -113,4 +114,11 @@ function pollEvent(win) {
     const ev = (win.events.length == 0) ? null : win.events[0];
     win.events.shift();
     return ev;
+}
+
+function windowTick(win) {
+    const date = Date.now();
+    const delta = (date - win.lastTick) / 1000;
+    win.lastTick = date;
+    return delta;
 }

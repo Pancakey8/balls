@@ -83,6 +83,21 @@ public export
 (x :: xs) ++ ys = x :: (xs ++ ys)
 
 public export
+data SuffixOf : List Type -> List Type -> Type where
+  Base : SuffixOf xs xs
+  Step : SuffixOf xs ys -> SuffixOf xs (y :: ys)
+
+public export
+dropModel : SuffixOf st target -> Model target -> Model st
+dropModel Base model = model
+dropModel (Step prf) (x :: xs) = dropModel prf xs
+
+public export
+rebuildModel : SuffixOf st target -> Model target -> Model st -> Model target
+rebuildModel Base _ newSt = newSt
+rebuildModel (Step prf) (x :: xs) newSt = x :: rebuildModel prf xs newSt
+
+public export
 splitModel : (xs : List Type) -> Model (xs ++ ys) -> (Model xs, Model ys)
 splitModel [] ys = ([], ys)
 splitModel (x :: xs) (y :: ys) =
@@ -107,14 +122,14 @@ interface Arrow (arr : Type -> Type -> List Type -> Type) where
   (>>>) : arr a b st -> arr b c st -> arr a c st
   first : arr a b st -> arr (a, c) (b, c) st
   second : arr a b st -> arr (c, a) (c, b) st
-  liftState : (pre : List Type) -> arr a b st -> arr a b (pre ++ st)
-  liftState' : (suf : List Type) -> {st : List Type} -> arr a b st -> arr a b (st ++ suf)
+  liftState : {st, targ : List Type} -> {auto pf : SuffixOf st targ} -> arr a b st -> arr a b targ
+  liftState' : {suf, st : List Type} -> arr a b st -> arr a b (st ++ suf)
 
   (***) : arr inp1 out1 st -> arr inp2 out2 st -> arr (inp1, inp2) (out1, out2) st
   f *** g = first f >>> second g
 
   (&&&) : {st : List Type} -> arr inp out1 st -> arr inp out2 st -> arr inp (out1, out2) st
-  x &&& y = liftState' st (arrow dup)  >>> x *** y
+  x &&& y = liftState' (arrow dup)  >>> x *** y
 
   loop : arr (inp, shr) (out, shr) (shr :: st) -> arr inp out (shr :: st)
 
@@ -127,7 +142,7 @@ interface Arrow arr => ArrowChoice (arr : Type -> Type -> List Type -> Type) whe
   f +++ g = left f >>> right g
 
   (\|/) : {st : List Type} -> arr a b st -> arr c b st -> arr (Either a c) b st
-  f \|/ g = f +++ g >>> liftState' st (arrow fromEither)
+  f \|/ g = f +++ g >>> liftState' (arrow fromEither)
 
 public export
 interface Arrow arr => ArrowPlus (arr : Type -> Type -> List Type -> Type) where
@@ -164,12 +179,12 @@ Arrow Controller where
     let (i', st') = f i st
     in ((inpOther, i'), st')
 
-  liftState pre (MkController f) = MkController $ \i, allSt =>
-    let (st1, st2) = splitModel pre allSt
-        (out, st2') = f i st2
-    in (out, st1 ++ st2')
+  liftState (MkController f) = MkController $ \i, allSt =>
+    let innerSt = dropModel pf allSt
+        (out, innerSt') = f i innerSt
+    in (out, rebuildModel pf allSt innerSt')
 
-  liftState' suf {st} (MkController f) = MkController $ \i, allSt =>
+  liftState' {st} (MkController f) = MkController $ \i, allSt =>
     let (st1, st2) = splitModel st allSt
         (out, st1') = f i st1
     in (out, st1' ++ st2)
@@ -238,17 +253,17 @@ Arrow Component where
     viewOf = v,
     ctrlOf = second c }
 
-  liftState pre (MkComponent v c) = MkComponent {
+  liftState (MkComponent v c) = MkComponent {
     viewOf = \mdl =>
-      let (l, r) = splitModel pre mdl
+      let r = dropModel pf mdl
       in v r,
-    ctrlOf = liftState pre c }
+    ctrlOf = liftState c }
 
-  liftState' suf {st} (MkComponent v c) = MkComponent {
+  liftState' {st} (MkComponent v c) = MkComponent {
     viewOf = \mdl =>
       let (l, r) = splitModel st mdl
       in v l,
-    ctrlOf = liftState' suf c }
+    ctrlOf = liftState' c }
 
   loop (MkComponent v c) = MkComponent {
     viewOf = v, 
@@ -289,7 +304,9 @@ windowOf cmp initialSt = withWindow $ \win => handleWindow win initialSt
 
     handleWindow : Window -> Model st -> IO ()
     handleWindow win state = do
-      state' <- winEvents win state
-      let currentView = cmp.viewOf state'
+      tick <- windowTick win
+      let (_, state) = runController cmp.ctrlOf (GameTick tick) state
+      state <- winEvents win state
+      let currentView = cmp.viewOf state
       renderView win currentView
-      frame (handleWindow win state')
+      frame (handleWindow win state)

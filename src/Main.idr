@@ -9,81 +9,58 @@ red = MkCol 255 0 0 255
 blue = MkCol 0 0 255 255
 white = MkCol 255 255 255 255
 
+data AnimTick = Tick Double
+data ColorState = WaitBlue | WaitRed
+
 record Circle1 where
   constructor MkCircle1
-  colorSwitch : Bool
-  visible : Bool
+  color : Color
 
 viewCircle1 : Model [Circle1] -> View
 viewCircle1 [circ] =
-  if circ.visible
-    then toView $ MkCircle (MkV2 200 200) 40 (if circ.colorSwitch
-                                                then red
-                                                else blue)
-    else unitView
+  toView $ MkCircle (MkV2 200 200) 40 circ.color
 
-data ColorSignal = Switch | Stay
-data VisibleSignal = Woosh | Boop
-
-eventsCircle1 : Controller Event ColorSignal [Circle1]
-eventsCircle1 = MkController $ \ev, [circ] =>
+eventHandler : Controller (Event, AnimTick) (Unit, AnimTick) [Circle1]
+eventHandler = MkController $ \(ev, (Tick n)), [circ] =>
   case ev of
-    MouseClick (MkMouse BLeft (MkV2 x y)) =>
-      if pow (x - 200) 2 + pow (y - 200) 2 <= 1600
-        then (Switch, [{ colorSwitch $= not } circ])
-        else (Stay, [circ])
-    _ => (Stay, [circ])
+    GameTick delta => 
+      let n' = delta + n
+      in (((), Tick n'), [circ])
+    _ => (((), Tick n), [circ])
 
-visibCircle1 : Controller VisibleSignal Unit [Circle1]
-visibCircle1 = MkController $ \ev, [circ] =>
-  case ev of
-    Woosh => ((), [{ visible $= not } circ])
-    Boop => ((), [circ])
+switchBlue : Controller (ColorState, AnimTick) (ColorState, AnimTick) [Circle1]
+switchBlue = MkController $ \(colSt, Tick n), [circ] =>
+  case colSt of
+    WaitBlue =>
+      if n >= 2
+        then ((WaitRed, Tick (n - 2)), [{ color := blue } circ])
+        else ((WaitBlue, Tick n), [circ])
+    other => 
+      ((other, Tick n), [circ])
 
-record Circle2 where
-  constructor MkCircle2
-  color : Color
-  visible : Bool
+switchRed : Controller (ColorState, AnimTick) (ColorState, AnimTick) [Circle1]
+switchRed = MkController $ \(colSt, Tick n), [circ] =>
+  case colSt of
+    WaitRed =>
+      if n >= 2
+        then ((WaitBlue, Tick (n - 2)), [{ color := red } circ])
+        else ((WaitRed, Tick n), [circ])
+    other => 
+      ((other, Tick n), [circ])
 
-viewCircle2 : Model [Circle2] -> View
-viewCircle2 [circ] =
-  if circ.visible
-    then toView $ MkCircle (MkV2 100 300) 60 circ.color
-    else unitView
+alternatingHandler : Controller (Unit, ColorState) (Unit, ColorState) [AnimTick, Circle1]
+alternatingHandler = second (loop (liftState $ switchBlue >>> switchRed))
 
-eventsCircle2 : Controller Event VisibleSignal [Circle2]
-eventsCircle2 = MkController $ \ev, [circ] =>
-  case ev of
-    MouseClick (MkMouse BLeft (MkV2 x y)) =>
-      if pow (x - 100) 2 + pow (y - 300) 2 <= 3600
-        then (Woosh, [{ visible $= not } circ])
-        else (Boop, [circ])
-    _ => (Boop, [circ])
+eventLoop : Controller Event Unit [AnimTick, Circle1]
+eventLoop = loop (liftState eventHandler)
 
-colorCircle2 : Controller ColorSignal Unit [Circle2]
-colorCircle2 = MkController $ \ev, [circ] =>
-  case ev of
-    Switch =>
-      if circ.color == blue
-        then ((), [{ color := red } circ])
-        else ((), [{ color := blue } circ])
-    Stay => ((), [circ])
+alternatingLoop : Controller Unit Unit [ColorState, AnimTick, Circle1]
+alternatingLoop = loop (liftState alternatingHandler)
 
-background : Component Unit Unit []
-background = MkComponent (\[] => layer (-99) (MkFill white))
-                         (arrow id)
-
-composedCtrl : Controller Event Unit [Circle1, Circle2]
-composedCtrl =
-  liftState' _ eventsCircle1
-    &&& liftState [Circle1] eventsCircle2
-    >>> first (liftState [Circle1] colorCircle2)
-    >>> lmap snd (liftState' _ visibCircle1)
-
-jointCircle : Component Event Unit [Circle1, Circle2]
-jointCircle = MkComponent (\[c1, c2] => viewCircle1 [c1] <> viewCircle2 [c2]) composedCtrl
-
-screen = liftState' _ (lmap (const ()) background) &&& jointCircle
+circle : Component Event Unit [ColorState, AnimTick, Circle1]
+circle = MkComponent (\[_, _, circ] => viewCircle1 [circ])
+         $ liftState eventLoop >>> alternatingLoop
 
 main : IO ()
-main = windowOf screen [MkCircle1 False True, MkCircle2 red True]
+main = windowOf circle [WaitBlue, Tick 0, MkCircle1 red]
+

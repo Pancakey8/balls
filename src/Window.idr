@@ -46,3 +46,9 @@ public export
 frame : IO a -> IO a
 frame f = primIO (prim_toFrame f)
 
+%foreign "browser:lambda:windowTick"
+prim_windowTick : Window -> PrimIO Double
+
+export
+windowTick : Window -> IO Double
+windowTick win = primIO (prim_windowTick win)

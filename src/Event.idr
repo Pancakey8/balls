@@ -16,6 +16,7 @@ public export
 data Event = MouseHold MouseEvent
            | MouseRelease MouseEvent
            | MouseClick MouseEvent
+           | GameTick Double
 
 public export
 data EventKind = KMouseHold
