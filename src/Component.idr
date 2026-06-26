@@ -3,10 +3,12 @@ module Component
 import Data.List
 import Data.Either
 import Data.Maybe
+import Data.Fin
 import Window
 import Event
 import Geometry
 import Control.Monad.Identity
+import Debug.Trace
 
 export
 infixl 8 <>
@@ -62,6 +64,55 @@ normalise obj = map snd $ sortBy (\(a, _), (b, _) => compare a b) $ normalise' 0
 export
 renderView : Window -> View -> IO ()
 renderView win vw = beginDraw win *> traverse_ (\(MkAnyObj o) => blit win o) (normalise vw) <* endDraw win
+  
+export
+record Job (m : Type -> Type) (steps : Nat) (s : Type) (a : Type) where
+  constructor MkJob
+  index : Fin (S steps)
+  prev : s
+  step : Fin steps -> s -> m (Maybe s)
+  final : s -> a
+
+export
+iterate : Monad m => {n : Nat} -> Job m n s a -> m (Either (Job m n s a) a)
+iterate (MkJob idx pv step final) =
+  case strengthen idx of
+    Nothing => pure (Right (final pv))
+    Just idx' => do
+      res <- step idx' pv
+      case res of
+        Nothing => pure (Right (final pv))
+        Just res' => pure (Left (MkJob (FS idx') res' step final))
+
+export
+iterateN : Monad m => (budget : Nat) -> {k : Nat} -> Job m k s a -> m (Either (Job m k s a) a)
+iterateN Z job = pure (Left job)
+iterateN (S n) job = 
+  iterate job >>= \case
+    Left nextJob => iterateN n nextJob
+    Right v => pure (Right v)
+
+export
+read : Monad m => {n : Nat} -> Job m n s a -> a
+read job = job.final job.prev
+
+export
+fix : Monad m => {n : Nat} -> Job m n s a -> m a
+fix job =
+  iterate job >>= \case
+    Left job' => fix job'
+    Right v => pure v
+
+public export
+interface Monad m => Iterative (m : Type -> Type) (s : Nat -> Type) (a : Type) | s where
+  iterStep : {k : Nat} -> (i : Fin k) -> s k -> m (Maybe (s k))
+  project : {k : Nat} -> s k -> a
+
+export
+makeJob : {m : Type -> Type} -> {s : Nat -> Type} -> {a : Type} ->
+          Iterative m s a => Monad m =>
+          {n : Nat} -> (s n) -> Job m n (s n) a
+makeJob iter = MkJob FZ iter (iterStep {k=n}) project
 
 public export
 data Model : List Type -> Type where
