@@ -4,76 +4,59 @@ import Component
 import Window
 import Geometry
 import Event
-import Data.Vect
-import Data.Fin
-import Data.Fin.Properties
 import Debug.Trace
+import Control.Monad.Identity
+import Data.Nat
 
 red = MkCol 255 0 0 255
 blue = MkCol 0 0 255 255
 white = MkCol 255 255 255 255
 
-data DetonateWait : Nat -> Type where
-  Wait : DetonateWait n
+predMaybe : Nat -> Maybe Nat
+predMaybe Z = Nothing
+predMaybe (S k) = Just k
 
-data DetonateGo : Nat -> Type where
-  Go : DetonateGo n
-
-record Circles (n : Nat) where
+record Circles where
   constructor MkCircles
-  states : Vect n Bool
+  count : Nat
 
-circlesView : (n : Nat) -> Model [Circles (S n)] -> View
-circlesView n [(MkCircles states)] =
-  foldl (\v, (i, st) =>
-    case st of
-      True => v <> (MkCircle (MkV2 (50 * cast (finToNat i) + 50) 40) 25 red)
-      False => v) unitView (zip (allFins (S n)) states)
+viewCircles : Model [Circles] -> View
+viewCircles [circ] =
+  case predMaybe circ.count of
+    Nothing => unitView
+    Just n => foldl (\v, i => v <> MkCircle (MkV2 (80 * cast i + 80) 60) 30 red) unitView [0..n]
 
-detonationTrigger : (n : Nat) -> Controller (Event, DetonateWait (S n)) (Unit, Either (DetonateWait (S n)) (DetonateGo (S n))) []
-detonationTrigger 0 = liftState (arrow (const ((), Left Wait)))
-detonationTrigger (S n) = MkController $ \(ev, det), st =>
+data CircleDelta = Increment | Decrement
+
+events : Controller Event (Either CircleDelta Unit) []
+events = MkControllerT $ \ev, [] =>
   case ev of
-    MouseClick _ => (((), Right Go), st)
-    _ => (((), Left Wait), st)
+    MouseClick (MkMouse BLeft pos) =>
+      pure (Left Decrement, [])
+    MouseClick (MkMouse BRight pos) =>
+      pure (Left Increment, [])
+    _ => pure (Right (), [])
 
-public export
-data RecStep : Nat -> Type -> Type where
-  Pure : a -> RecStep n a
-  Next : (a -> a) -> Inf (RecStep n a) -> RecStep (S n) a
+logger : ControllerT IO CircleDelta Unit [Circles]
+logger = MkControllerT $ \delta, [circ] => do
+  case delta of
+    Increment => putStrLn $ "Incremented to " ++ show circ.count
+    Decrement => putStrLn $ "Decremented to " ++ show circ.count
+  pure ((), [circ])
 
-recMap : {n : Nat} -> (a -> a) -> RecStep n a -> RecStep n a
-recMap f (Pure v) = Pure (f v)
-recMap f (Next g next) = Next (f . g) next
+circleOperate : Controller CircleDelta Unit [Circles]
+circleOperate = MkControllerT $ \delta, [circ] =>
+  case delta of
+    Increment =>
+      pure ((), [{ count $= S } circ])
+    Decrement =>
+      pure ((), [{ count $= pred } circ])
 
-fix : (k : Nat) -> {n : Nat} -> RecStep (k + n) a -> Either (RecStep n a) a
-fix _ (Pure x) = Right x
-fix Z comp = Left comp
-fix (S k) (Next f next) =
-  case fix k next of
-    Left comp => Left (recMap f comp)
-    Right v => Right (f v)
+circlesController : ControllerT IO Event Unit [Circles]
+circlesController = hoist (liftState events) >>> left (logger &&& (hoist circleOperate)) >>> liftState (arrow (const ()))
 
-factorial : (n : Nat) -> RecStep n Int
-factorial 0 = Pure 1
-factorial (S n) = Next (\k => cast (S n) * k) (factorial n)
-
-toggleCircles : (n : Nat) -> Circles (S n) -> RecStep n (Circles (S n))
-toggleCircles n circ = toggle n {pf=reflexive} circ
-  where
-    toggle : (k : Nat) -> {auto pf : LTE (S k) (S n)} -> Circles (S n) -> RecStep k (Circles (S n))
-    toggle Z circ = Pure $ {states $= updateAt last not} circ
-    toggle (S k) {pf=LTESucc pf} circ = Next {states $= updateAt (complement $ natToFinLT (S k)) not}
-                                        $ toggle k {pf=lteSuccRight pf} circ
-
-wait : {n : Nat} -> Controller a (DetonateWait n) []
-wait = arrow (const Wait)
-
-circles : (n : Nat) -> Component Event Unit [DetonateWait (S n), Circles (S n)]
-circles n = MkComponent (\[_, circ] => circlesView n [circ]) (loop $ liftState (detonationTrigger n >>> second (wait \|/ wait)))
-
-background : Component Unit Unit []
-background = MkComponent (\[] => toView (MkFill white)) (arrow id)
+circles : ComponentT IO Event Unit [Circles]
+circles = MkComponentT viewCircles circlesController
 
 main : IO ()
-main = windowOf (liftState (lmap (const ()) background) &&& (circles 9)) [Wait, MkCircles (replicate 10 True)]
+main = windowOf circles [MkCircles 5]

@@ -6,6 +6,7 @@ import Data.Maybe
 import Window
 import Event
 import Geometry
+import Control.Monad.Identity
 
 export
 infixl 8 <>
@@ -129,7 +130,7 @@ interface Arrow (arr : Type -> Type -> List Type -> Type) where
   f *** g = first f >>> second g
 
   (&&&) : {st : List Type} -> arr inp out1 st -> arr inp out2 st -> arr inp (out1, out2) st
-  x &&& y = liftState' (arrow dup)  >>> x *** y
+  x &&& y = liftState' (arrow dup) >>> x *** y
 
   loop : arr (inp, shr) (out, shr) (shr :: st) -> arr inp out (shr :: st)
 
@@ -151,153 +152,143 @@ interface Arrow arr => ArrowPlus (arr : Type -> Type -> List Type -> Type) where
   withDefault : arr a (Maybe b) st -> b -> arr a b st
 
 public export
-record Controller (inp : Type) (out : Type) (st : List Type) where
-  constructor MkController
-  runController : inp -> Model st -> (out, Model st)
+record ControllerT (m : Type -> Type) (inp : Type) (out : Type) (st : List Type) where
+  constructor MkControllerT
+  runControllerT : inp -> Model st -> m (out, Model st)
+
+export
+hoistCtrl : (Monad m, Monad n) => ({a : Type} -> m a -> n a) -> 
+            {out : Type} -> {st : List Type} ->
+            ControllerT m inp out st -> ControllerT n inp out st
+hoistCtrl f (MkControllerT c) = MkControllerT $ \inp, st => 
+  f (c inp st)
+
+export
+hoist : (Monad m) => {out : Type} -> {st : List Type} ->
+        ControllerT Identity inp out st ->
+        ControllerT m inp out st
+hoist = hoistCtrl (\(Id x) => pure x)
 
 public export
-Profunctor Controller where
-  lmap f (MkController c) = MkController $ \i, st =>
+{m : Type -> Type} ->
+Monad m => Profunctor (ControllerT m) where
+  lmap f (MkControllerT c) = MkControllerT $ \i, st =>
     c (f i) st
-  rmap f (MkController c) = MkController $ \i, st =>
-    let (out, st') = c i st
-    in (f out, st')
+  rmap f (MkControllerT c) = MkControllerT $ \i, st => do
+    (out, st') <- c i st
+    pure (f out, st')
 
 public export
-Arrow Controller where
-  arrow f = MkController $ \i, [] => (f i, [])
+{m : Type -> Type} ->
+Monad m => Arrow (ControllerT m) where
+  arrow f = MkControllerT $ \i, [] => pure (f i, [])
 
-  (MkController f) >>> (MkController g) = MkController $ \i, st =>
-    let (interm, st') = f i st
-    in g interm st'
+  (MkControllerT f) >>> (MkControllerT g) = MkControllerT $ \i, st => do
+    (interm, st') <- f i st
+    g interm st'
 
-  first (MkController f) = MkController $ \(i, inpOther), st =>
-    let (i', st') = f i st
-    in ((i', inpOther), st')
+  first (MkControllerT f) = MkControllerT $ \(i, inpOther), st => do
+    (i', st') <- f i st
+    pure ((i', inpOther), st')
 
-  second (MkController f) = MkController $ \(inpOther, i), st =>
-    let (i', st') = f i st
-    in ((inpOther, i'), st')
+  second (MkControllerT f) = MkControllerT $ \(inpOther, i), st => do
+    (i', st') <- f i st
+    pure ((inpOther, i'), st')
 
-  liftState (MkController f) = MkController $ \i, allSt =>
+  liftState (MkControllerT f) = MkControllerT $ \i, allSt => do
     let innerSt = dropModel pf allSt
-        (out, innerSt') = f i innerSt
-    in (out, rebuildModel pf allSt innerSt')
+    (out, innerSt') <- f i innerSt
+    pure (out, rebuildModel pf allSt innerSt')
 
-  liftState' {st} (MkController f) = MkController $ \i, allSt =>
+  liftState' {st} (MkControllerT f) = MkControllerT $ \i, allSt => do
     let (st1, st2) = splitModel st allSt
-        (out, st1') = f i st1
-    in (out, st1' ++ st2)
+    (out, st1') <- f i st1
+    pure (out, st1' ++ st2)
 
-  loop (MkController f) = MkController $ \inp, (prev :: s) =>
-    let ((out, next), (_ :: s')) = f (inp, prev) (prev :: s)
-    in (out, next :: s')
+  loop (MkControllerT f) = MkControllerT $ \inp, (prev :: s) => do
+    ((out, next), (_ :: s')) <- f (inp, prev) (prev :: s)
+    pure (out, next :: s')
 
-public export
-ArrowChoice Controller where
-  left (MkController f) = MkController $ \i, st =>
-    case i of
-      Left i =>
-        let (i', st') = f i st
-        in (Left i', st')
-      Right i => (Right i, st)
-
-  right (MkController f) = MkController $ \i, st =>
-    case i of
-      Right i =>
-        let (i', st') = f i st
-        in (Right i', st')
-      Left i => (Left i, st)
 
 public export
-ArrowPlus Controller where
-  zeroArrow = MkController $ \inp, st => (Nothing, st)
+{m : Type -> Type} ->
+Monad m => ArrowChoice (ControllerT m) where
+  left (MkControllerT f) = MkControllerT $ \i, st =>
+    case i of
+      Left i => do
+        (i', st') <- f i st
+        pure (Left i', st')
+      Right i => pure (Right i, st)
 
-  (MkController f) <++> (MkController g) = MkController $ \inp, st =>
-    case f inp st of
-      (Just out, st') => (Just out, st')
+  right (MkControllerT f) = MkControllerT $ \i, st =>
+    case i of
+      Right i => do
+        (i', st') <- f i st
+        pure (Right i', st')
+      Left i => pure (Left i, st)
+
+public export
+{m : Type -> Type} ->
+Monad m => ArrowPlus (ControllerT m) where
+  zeroArrow = MkControllerT $ \inp, st => pure (Nothing, st)
+
+  (MkControllerT f) <++> (MkControllerT g) = MkControllerT $ \inp, st =>
+    f inp st >>= \case
+      (Just out, st') => pure (Just out, st')
       (Nothing, _) => g inp st
 
   withDefault c def = rmap (fromMaybe def) c
 
 public export
-record Component (inp : Type) (out : Type) (st : List Type) where
-  constructor MkComponent
+record ComponentT (m : Type -> Type) (inp : Type) (out : Type) (st : List Type) where
+  constructor MkComponentT
   viewOf : Model st -> View
-  ctrlOf : Controller inp out st
+  ctrlOf : ControllerT m inp out st
 
 public export
-Profunctor Component where
-  lmap f (MkComponent v c) = MkComponent {
-    viewOf = v, 
-    ctrlOf = lmap f c }
-  rmap f (MkComponent v c) = MkComponent {
-    viewOf = v, 
-    ctrlOf = rmap f c }
+{m : Type -> Type} -> Monad m => Profunctor (ComponentT m) where
+  lmap f (MkComponentT v c) = MkComponentT v (lmap f c)
+  rmap f (MkComponentT v c) = MkComponentT v (rmap f c)
 
 public export
-Arrow Component where
-  arrow f = MkComponent {
-    viewOf = \[] => unitView,
-    ctrlOf = arrow f }
+{m : Type -> Type} -> Monad m => Arrow (ComponentT m) where
+  arrow f = MkComponentT (\_ => VEmpty) (arrow f)
 
-  (MkComponent v1 c1) >>> (MkComponent v2 c2) = MkComponent {
-    viewOf = \mdl => v1 mdl <> v2 mdl,
-    ctrlOf = c1 >>> c2 }
+  (MkComponentT v1 c1) >>> (MkComponentT v2 c2) = 
+    MkComponentT (\st => v1 st <> v2 st) (c1 >>> c2)
 
-  first (MkComponent v c) = MkComponent {
-    viewOf = v,
-    ctrlOf = first c }
+  first (MkComponentT v c) = 
+    MkComponentT v (first c)
 
-  second (MkComponent v c) = MkComponent {
-    viewOf = v,
-    ctrlOf = second c }
+  second (MkComponentT v c) = 
+    MkComponentT v (second c)
 
-  liftState (MkComponent v c) = MkComponent {
-    viewOf = \mdl =>
-      let r = dropModel pf mdl
-      in v r,
-    ctrlOf = liftState c }
+  liftState (MkComponentT v c) = 
+    MkComponentT (\allSt => v (dropModel pf allSt)) (liftState c)
 
-  liftState' {st} (MkComponent v c) = MkComponent {
-    viewOf = \mdl =>
-      let (l, r) = splitModel st mdl
-      in v l,
-    ctrlOf = liftState' c }
+  liftState' {st} (MkComponentT v c) = 
+    MkComponentT (\allSt => v (fst (splitModel st allSt))) (liftState' c)
 
-  loop (MkComponent v c) = MkComponent {
-    viewOf = v, 
-    ctrlOf = loop c }
+  loop (MkComponentT v c) = 
+    MkComponentT v (loop c)
 
 public export
-ArrowChoice Component where
-  left (MkComponent v c) = MkComponent {
-    viewOf = v,
-    ctrlOf = left c }
-
-  right (MkComponent v c) = MkComponent {
-    viewOf = v,
-    ctrlOf = right c }
+Controller : Type -> Type -> List Type -> Type
+Controller = ControllerT Identity
 
 public export
-ArrowPlus Component where
-  zeroArrow = MkComponent { viewOf = \_ => unitView, ctrlOf = zeroArrow }
-
-  (MkComponent v1 c1 <++> MkComponent v2 c2) = MkComponent {
-    viewOf = \mdl => v1 mdl <> v2 mdl,
-    ctrlOf = c1 <++> c2 }
-
-  withDefault c def = rmap (fromMaybe def) c
+Component : Type -> Type -> List Type -> Type
+Component = ComponentT Identity
 
 public export
-windowOf : {st : List Type} -> Component Event output st -> Model st -> IO ()
+windowOf : {st : List Type} -> ComponentT IO Event output st -> Model st -> IO ()
 windowOf cmp initialSt = withWindow $ \win => handleWindow win initialSt
   where
     winEvents : Window -> Model st -> IO (Model st)
     winEvents win currentState = do
       pollEvent win >>= \case
         Just ev => do
-          let (_, nextState) = runController cmp.ctrlOf ev currentState
+          (_, nextState) <- runControllerT cmp.ctrlOf ev currentState
           winEvents win nextState
         Nothing => 
           pure currentState
@@ -305,7 +296,7 @@ windowOf cmp initialSt = withWindow $ \win => handleWindow win initialSt
     handleWindow : Window -> Model st -> IO ()
     handleWindow win state = do
       tick <- windowTick win
-      let (_, state) = runController cmp.ctrlOf (GameTick tick) state
+      (_, state) <- runControllerT cmp.ctrlOf (GameTick tick) state
       state <- winEvents win state
       let currentView = cmp.viewOf state
       renderView win currentView
