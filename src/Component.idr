@@ -66,38 +66,38 @@ renderView : Window -> View -> IO ()
 renderView win vw = beginDraw win *> traverse_ (\(MkAnyObj o) => blit win o) (normalise vw) <* endDraw win
   
 export
-record Job (m : Type -> Type) (steps : Nat) (s : Type) (a : Type) where
-  constructor MkJob
+record IterMachine (m : Type -> Type) (steps : Nat) (s : Type) (a : Type) where
+  constructor MkIter
   index : Fin (S steps)
   prev : s
   step : Fin steps -> s -> m (Maybe s)
   final : s -> a
 
 export
-iterate : Monad m => {n : Nat} -> Job m n s a -> m (Either (Job m n s a) a)
-iterate (MkJob idx pv step final) =
+iterate : Monad m => {n : Nat} -> IterMachine m n s a -> m (Either (IterMachine m n s a) a)
+iterate (MkIter idx pv step final) =
   case strengthen idx of
     Nothing => pure (Right (final pv))
     Just idx' => do
       res <- step idx' pv
       case res of
         Nothing => pure (Right (final pv))
-        Just res' => pure (Left (MkJob (FS idx') res' step final))
+        Just res' => pure (Left (MkIter (FS idx') res' step final))
 
 export
-iterateN : Monad m => (budget : Nat) -> {k : Nat} -> Job m k s a -> m (Either (Job m k s a) a)
+iterateN : Monad m => (budget : Nat) -> {k : Nat} -> IterMachine m k s a -> m (Either (IterMachine m k s a) a)
 iterateN Z job = pure (Left job)
 iterateN (S n) job = 
   iterate job >>= \case
-    Left nextJob => iterateN n nextJob
+    Left nextIterMachine => iterateN n nextIterMachine
     Right v => pure (Right v)
 
 export
-read : Monad m => {n : Nat} -> Job m n s a -> a
+read : Monad m => {n : Nat} -> IterMachine m n s a -> a
 read job = job.final job.prev
 
 export
-fix : Monad m => {n : Nat} -> Job m n s a -> m a
+fix : Monad m => {n : Nat} -> IterMachine m n s a -> m a
 fix job =
   iterate job >>= \case
     Left job' => fix job'
@@ -109,10 +109,91 @@ interface Monad m => Iterative (m : Type -> Type) (s : Nat -> Type) (a : Type) |
   project : {k : Nat} -> s k -> a
 
 export
-makeJob : {m : Type -> Type} -> {s : Nat -> Type} -> {a : Type} ->
+makeIter : {m : Type -> Type} -> {s : Nat -> Type} -> {a : Type} ->
           Iterative m s a => Monad m =>
-          {n : Nat} -> (s n) -> Job m n (s n) a
-makeJob iter = MkJob FZ iter (iterStep {k=n}) project
+          {n : Nat} -> (s n) -> IterMachine m n (s n) a
+makeIter iter = MkIter FZ iter (iterStep {k=n}) project
+
+record Job (m : Type -> Type) (n : Nat) (a : Type) where
+  constructor MkJob
+  0 s : Type
+  iter : IterMachine m n s a
+
+export
+record JobSlot (m :  Type -> Type) (n : Nat) (a : Type) where
+  constructor MkSlot
+  jobs : List (k ** Job m k a)
+
+export
+emptySlot : JobSlot m n a
+emptySlot = MkSlot []
+
+export
+throttle : {k : Nat} -> {0 s : Type} ->
+           IterMachine m k s a -> JobSlot m n a -> JobSlot m n a
+throttle iterm (MkSlot jobs) = MkSlot ((k ** MkJob s iterm) :: jobs)
+
+export
+evaluate : Monad m => {n : Nat} -> JobSlot m n a -> m (List a, JobSlot m n a)
+evaluate {n} (MkSlot initialJobs) = do
+    (results, finalFront, finalBack) <- runBudget n initialJobs [] []
+    pure (results, MkSlot (finalFront ++ reverse finalBack))
+
+  where
+    runBudget : Nat -> 
+                List (k ** Job m k a) ->
+                List (k ** Job m k a) ->
+                List a ->
+                m (List a, List (k ** Job m k a), List (k ** Job m k a))
+
+    runBudget Z front back accResults = 
+      pure (accResults, front, back)
+
+    runBudget (S budget) [] [] accResults = 
+      pure (accResults, [], [])
+
+    runBudget (S budget) [] back accResults = 
+      runBudget (S budget) (reverse back) [] accResults
+
+    runBudget (S budget) ((k ** MkJob s iter) :: rest) back accResults = do
+      res <- iterate iter
+      case res of
+        Left nextIter => 
+          let nextJob = (k ** MkJob s nextIter)
+          in runBudget budget rest (nextJob :: back) accResults
+          
+        Right val => 
+          runBudget budget rest back (val :: accResults)
+
+export
+data FiboState : (n : Nat) -> Type where
+  Fibo : Int -> Int -> FiboState k
+
+export
+Iterative Identity FiboState Int where
+  iterStep i (Fibo a b) = pure $ Just $ Fibo b (a + b)
+  project (Fibo a b) = a
+
+export
+fibonacci : (n : Nat) -> IterMachine Identity n (FiboState n) Int
+fibonacci _ = makeIter (Fibo 0 1)
+
+export
+fiboLoop : IO ()
+fiboLoop = do
+  let slot : JobSlot Identity 12 Int
+      slot = emptySlot
+
+  let fibo10 = fibonacci 10
+  let slot = throttle fibo10 slot
+
+  let fibo15 = fibonacci 5
+  let slot = throttle fibo15 slot
+
+  let (a, slot) = runIdentity $ evaluate slot
+  printLn a
+  let (b, slot) = runIdentity $ evaluate slot
+  printLn b
 
 public export
 data Model : List Type -> Type where
