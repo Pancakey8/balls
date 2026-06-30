@@ -104,15 +104,18 @@ fix job =
     Right v => pure v
 
 public export
-interface Monad m => Iterative (m : Type -> Type) (s : Nat -> Type) (a : Type) | s where
-  iterStep : {k : Nat} -> (i : Fin k) -> s k -> m (Maybe (s k))
-  project : {k : Nat} -> s k -> a
+interface Monad m => Iterative (m : Type -> Type) (k : Nat) (s : Type) (a : Type) | s where
+  iterStep : (i : Fin k) -> s -> m (Maybe s)
+  project : s -> a
 
 export
-makeIter : {m : Type -> Type} -> {s : Nat -> Type} -> {a : Type} ->
-          Iterative m s a => Monad m =>
-          {n : Nat} -> (s n) -> IterMachine m n (s n) a
-makeIter iter = MkIter FZ iter (iterStep {k=n}) project
+makeIter : {m : Type -> Type} ->
+           {n : Nat} ->
+           {s : Type} ->
+           {a : Type} ->
+           Iterative m n s a => Monad m =>
+           s -> IterMachine m n s a
+makeIter iter = MkIter FZ iter iterStep project
 
 record Job (m : Type -> Type) (n : Nat) (a : Type) where
   constructor MkJob
@@ -164,36 +167,6 @@ evaluate {n} (MkSlot initialJobs) = do
           
         Right val => 
           runBudget budget rest back (val :: accResults)
-
-export
-data FiboState : (n : Nat) -> Type where
-  Fibo : Int -> Int -> FiboState k
-
-export
-Iterative Identity FiboState Int where
-  iterStep i (Fibo a b) = pure $ Just $ Fibo b (a + b)
-  project (Fibo a b) = a
-
-export
-fibonacci : (n : Nat) -> IterMachine Identity n (FiboState n) Int
-fibonacci _ = makeIter (Fibo 0 1)
-
-export
-fiboLoop : IO ()
-fiboLoop = do
-  let slot : JobSlot Identity 12 Int
-      slot = emptySlot
-
-  let fibo10 = fibonacci 10
-  let slot = throttle fibo10 slot
-
-  let fibo15 = fibonacci 5
-  let slot = throttle fibo15 slot
-
-  let (a, slot) = runIdentity $ evaluate slot
-  printLn a
-  let (b, slot) = runIdentity $ evaluate slot
-  printLn b
 
 public export
 data Model : List Type -> Type where
